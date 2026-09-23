@@ -1,0 +1,9 @@
+# File: requirements.txt
+# DANH SÁCH THƯ VIỆN CẦN CÀI
+   # Ví dụ:
+PySide6>=6.5.0
+PySide6-Fluent-Widgets[full]
+opencv-python
+onnxruntime
+insightface
+mediapipe
