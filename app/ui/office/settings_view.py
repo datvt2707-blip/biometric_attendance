@@ -1,1 +1,14 @@
-# File: app/ui/office/settings_view.py
+"""
+settings_view.py — MÀN "CÀI ĐẶT KHỐI VĂN PHÒNG (CHỈ ADMIN)"
+LÀM GÌ   : Lớp mỏng SettingsView kế thừa SettingsView trong common/views.py và chọn khối "office". Giao diện thật nằm ở views.py.
+             Ca làm việc, ngưỡng nhận diện, sao lưu, Telegram.
+CÔNG NGHỆ: Qt Widgets (kế thừa).
+NGHIỆP VỤ NỐI SAU: config/settings, notification_service.
+CHI TIẾT : docs/UI_GUIDE.md (tìm theo tên file)
+"""
+from app.ui.common import views as v
+
+
+class SettingsView(v.SettingsView):
+    def __init__(self):
+        super().__init__("staff", "o_set")
