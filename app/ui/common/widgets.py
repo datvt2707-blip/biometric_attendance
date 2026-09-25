@@ -10,7 +10,8 @@ CHI TIẾT : docs/UI_GUIDE.md (tìm theo tên file)
 """
 from PySide6.QtCore import Qt, QRectF, QPointF, QSize
 from PySide6.QtGui import (QPainter, QColor, QPen, QPolygonF, QRadialGradient, QPainterPath)
-from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel, QWidget, QTableWidget, QTableWidgetItem, QHeaderView
+from PySide6.QtWidgets import (QFrame, QVBoxLayout, QHBoxLayout, QLayout, QLabel, QWidget, QTableWidget,
+                               QTableWidgetItem, QHeaderView, QSizePolicy)
 from app.ui import theme as T
 
 
@@ -131,7 +132,15 @@ class StepsBar(QWidget):
     def __init__(self, steps, cur):
         super().__init__()
         self.steps, self.cur = steps, cur
-        self.setFixedHeight(56)
+        self.setMinimumHeight(56)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def set_current(self, cur):
+        """Move the highlighted step; -1 keeps every step pending."""
+        cur = int(cur)
+        if cur != self.cur:
+            self.cur = cur
+            self.update()
 
     def paintEvent(self, _):
         p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
@@ -349,8 +358,13 @@ def action_cell(items):
         if len(it) > 2: b.clicked.connect(lambda _=False, f=it[2]: f())
         b.setStyleSheet(f"QPushButton{{color:{col};border:1px solid {col};border-radius:0px;padding:3px 12px;background:transparent;}}"
                         f"QPushButton:hover{{background:{T.CARD2};}}")
+        # A narrow column must never clip a caption down to an unreadable stub.
+        b.setMinimumWidth(b.fontMetrics().horizontalAdvance(text) + 30)
+        b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         h.addWidget(b)
     h.addStretch()
+    w.setMinimumWidth(sum(button.minimumWidth() for button in w.findChildren(QPushButton))
+                      + 6 * max(0, len(items) - 1) + 16)
     return w
 
 
@@ -359,18 +373,124 @@ def make_table(headers, rows, tone_cols=(), actions=None):
     t = QTableWidget(len(rows), n)
     t.setHorizontalHeaderLabels(list(headers) + (["Thao tác"] if actions else []))
     t.verticalHeader().setVisible(False)
-    t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+    header = t.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.Stretch)
+    header.setMinimumSectionSize(72)
+    if actions:
+        # Action buttons keep their natural width; the text columns share the rest.
+        header.setSectionResizeMode(n - 1, QHeaderView.Fixed)
     t.setEditTriggers(QTableWidget.NoEditTriggers); t.setSelectionMode(QTableWidget.NoSelection)
     t.setShowGrid(False); t.setFocusPolicy(Qt.NoFocus)
+    t.setHorizontalScrollMode(QTableWidget.ScrollPerPixel)
+    t.setWordWrap(False); t.setTextElideMode(Qt.ElideRight)
+    action_width = 96
     for r, row in enumerate(rows):
         t.setRowHeight(r, 46)
         for c, val in enumerate(row):
             it = QTableWidgetItem(val)
+            it.setToolTip(val)
             if c in tone_cols: it.setForeground(QColor(T.TONE[tone_of(val)]))
             t.setItem(r, c, it)
-        if actions: t.setCellWidget(r, n - 1, action_cell(actions(row)))
-    t.setFixedHeight(46 * len(rows) + 42)
+        if actions:
+            cell = action_cell(actions(row))
+            t.setCellWidget(r, n - 1, cell)
+            action_width = max(action_width, cell.minimumWidth())
+    if actions:
+        t.setColumnWidth(n - 1, action_width)
+    # Long tables scroll instead of pushing the rest of the page off screen.
+    natural = 46 * len(rows) + 42
+    t.setMinimumHeight(min(natural, 188) if rows else 84)
+    t.setMaximumHeight(min(natural, 46 * 12 + 42) if rows else 84)
+    t.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
     return t
+
+
+from PySide6.QtCore import QDate
+from PySide6.QtWidgets import QDateEdit
+
+
+class DateEdit(QDateEdit):
+    """Calendar field for YYYY-MM-DD values; empty until a day is picked.
+
+    text() returns the ISO date (or "") so it can replace a QLineEdit anywhere a
+    date is typed today.
+    """
+
+    EMPTY = QDate(1900, 1, 1)
+
+    def __init__(self, value=None, placeholder="Chọn ngày…"):
+        super().__init__()
+        self.setCalendarPopup(True)
+        self.setDisplayFormat("yyyy-MM-dd")
+        self.setDateRange(self.EMPTY, QDate(2100, 12, 31))
+        self.setSpecialValueText(placeholder)
+        self.setMinimumWidth(150)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.set_value(value)
+
+    def set_value(self, value):
+        parsed = QDate.fromString(str(value), "yyyy-MM-dd") if value else QDate()
+        self.setDate(parsed if parsed.isValid() else self.EMPTY)
+
+    def setText(self, value):
+        self.set_value(value)
+
+    def text(self):
+        return "" if self.date() == self.EMPTY else self.date().toString("yyyy-MM-dd")
+
+    def clear(self):
+        self.setDate(self.EMPTY)
+
+
+def date_text(edit):
+    """ISO text of a DateEdit, or "" while it still shows the empty placeholder."""
+    return edit.text()
+
+
+class ResponsiveRow(QWidget):
+    """Cards side by side, stacked vertically once the window becomes narrow."""
+
+    def __init__(self, cards, stretch=None, *, threshold=980, spacing=14):
+        super().__init__()
+        self.cards = list(cards)
+        self.stretch = list(stretch) if stretch else [1] * len(self.cards)
+        self.threshold = int(threshold)
+        self._spacing = spacing
+        self._horizontal = None
+        self._inner = None
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(spacing)
+        # Without this the layout pins a minimum width wide enough for every card
+        # side by side, so the row could never shrink far enough to stack.
+        self._layout.setSizeConstraint(QLayout.SetNoConstraint)
+        self.setMinimumWidth(0)
+        self._apply(horizontal=True)
+
+    def _apply(self, *, horizontal):
+        if horizontal == self._horizontal:
+            return
+        if self._inner is not None:
+            while self._inner.count():
+                item = self._inner.takeAt(0)
+                if item.widget():
+                    item.widget().setParent(None)
+            self._layout.removeItem(self._inner)
+        self._inner = QHBoxLayout() if horizontal else QVBoxLayout()
+        self._inner.setContentsMargins(0, 0, 0, 0)
+        self._inner.setSpacing(self._spacing)
+        self._inner.setSizeConstraint(QLayout.SetNoConstraint)
+        for card, weight in zip(self.cards, self.stretch):
+            card.setParent(self)
+            card.show()
+            self._inner.addWidget(card, weight if horizontal else 0)
+        self._layout.addLayout(self._inner)
+        self._horizontal = horizontal
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply(horizontal=len(self.cards) < 2
+                    or event.size().width() >= self.threshold)
 
 
 def user_chip():

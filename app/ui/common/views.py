@@ -20,7 +20,8 @@ from app.ui import theme as T
 from app.ui.ui_config import UI_CONFIG
 from app.ui.common import dialogs as D
 from app.ui.common.widgets import (Card, label, stat_card, bar_row, activity_row, LineChart, StepsBar,
-                                   CameraView, make_table, tag, Pill, user_chip, Bar, PrimaryPushButton, PushButton, SearchLineEdit, ComboBox, LineEdit)
+                                   CameraView, make_table, tag, Pill, user_chip, Bar, PrimaryPushButton, PushButton, SearchLineEdit, ComboBox, LineEdit,
+                                   DateEdit, date_text, ResponsiveRow)
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +77,11 @@ class BasePage(QWidget):
 
     def heading(self): return self.TITLE
 
-    def row(self, *cards, stretch=None):
-        h = QHBoxLayout(); h.setSpacing(14)
-        for i, c in enumerate(cards): h.addWidget(c, stretch[i] if stretch else 1)
-        self.body.addLayout(h); return h
+    def row(self, *cards, stretch=None, threshold=980):
+        """Lay cards out side by side, stacking them when the window is narrow."""
+        container = ResponsiveRow(cards, stretch, threshold=threshold)
+        self.body.addWidget(container)
+        return container
 
 
 class DashboardView(BasePage):
@@ -152,6 +154,10 @@ class AttendanceView(BasePage):
         self._last_match = None
         self._last_analysis = None
         self._last_analysis_at = None
+        self._held_match = None
+        self._held_track = None
+        self._held_at = None
+        self._match_streak = 0
         self._liveness_challenge = ActiveLivenessChallenge()
         left = Card()
         self.camera_preview = CameraView(d["chip"])
@@ -166,7 +172,8 @@ class AttendanceView(BasePage):
             self._camera_controller.camera.camera_stopped.connect(self._on_attendance_camera_lost)
             self._camera_controller.camera.camera_error.connect(self._on_attendance_camera_error)
         left.box.addWidget(label(d["st_title"], "cardTitle")); left.box.addWidget(label(d["st_hint"], "muted"))
-        left.box.addWidget(StepsBar(d["steps"], d["cur"]))
+        self.steps_bar = StepsBar(d["steps"], d["cur"])
+        left.box.addWidget(self.steps_bar)
         right = Card("K\u1ebft qu\u1ea3 x\u00e1c th\u1ef1c")
         right.box.addWidget(label("K\u1ebft qu\u1ea3 nh\u1eadn di\u1ec7n th\u1ef1c t\u1ebf t\u1eeb camera"))
         kv(right, "Ph\u00e1t hi\u1ec7n khu\u00f4n m\u1eb7t", "\u0110ang ch\u1edd", T.SAGE)
@@ -195,16 +202,14 @@ class AttendanceView(BasePage):
         self.row(left, right, stretch=[3, 2])
         history = Card(f"Nh\u1eadt k\u00fd {d['att'].lower()}")
         filter_row = QHBoxLayout()
-        self._attendance_from_date = LineEdit()
-        self._attendance_from_date.setPlaceholderText("Từ ngày (YYYY-MM-DD)")
-        self._attendance_to_date = LineEdit()
-        self._attendance_to_date.setPlaceholderText("Đến ngày (YYYY-MM-DD)")
+        self._attendance_from_date = DateEdit(placeholder="Từ ngày…")
+        self._attendance_to_date = DateEdit(placeholder="Đến ngày…")
         self._attendance_status = ComboBox()
         self._attendance_status.addItems(["Tất cả trạng thái", "Có mặt", "Đi muộn", "Vắng", "Có phép"] +
                                          (["Chưa hoàn tất"] if self.block == "staff" else []))
         self._attendance_query = SearchLineEdit()
         self._attendance_query.setPlaceholderText("Tìm theo mã hoặc họ tên")
-        self._attendance_query.setFixedWidth(210)
+        self._attendance_query.setMinimumWidth(180)
         for widget in (self._attendance_from_date, self._attendance_to_date,
                        self._attendance_status, self._attendance_query):
             filter_row.addWidget(widget)
@@ -224,8 +229,11 @@ class AttendanceView(BasePage):
         self._attendance_filter_timer.setInterval(250)
         self._attendance_filter_timer.timeout.connect(self._reset_attendance_page)
         self._attendance_query.textChanged.connect(lambda _text: self._attendance_filter_timer.start())
-        self._attendance_from_date.editingFinished.connect(self._reset_attendance_page)
-        self._attendance_to_date.editingFinished.connect(self._reset_attendance_page)
+        self._attendance_from_date.dateChanged.connect(lambda _d: self._reset_attendance_page())
+        self._attendance_to_date.dateChanged.connect(lambda _d: self._reset_attendance_page())
+        clear_dates = PushButton("Xóa ngày")
+        clear_dates.clicked.connect(self._clear_attendance_dates)
+        filter_row.insertWidget(2, clear_dates)
         self._attendance_status.currentIndexChanged.connect(self._reset_attendance_page)
         page_row = QHBoxLayout()
         self._attendance_page_label = label("Trang 1", "muted")
@@ -238,6 +246,54 @@ class AttendanceView(BasePage):
         history.box.addLayout(page_row)
         self.body.addWidget(history)
         self._refresh_attendance_history()
+
+    HOLD_SECONDS = 8.0
+    HOLD_CONFIRMATIONS = 2
+
+    def _release_hold(self):
+        """Drop the locked identity so the next person starts from scratch."""
+        self._held_match = None
+        self._held_track = None
+        self._held_at = None
+        self._match_streak = 0
+
+    def _hold_identity(self, match, result):
+        """Lock a confirmed identity for a few seconds so the readout stops flickering.
+
+        The lock only survives on the same tracked face and is dropped as soon as a
+        different identity is matched, the track changes or the hold ages out; it
+        never substitutes for the liveness proof, which is still validated per frame.
+        """
+        expected_kind = "employee" if self.block == "staff" else "student"
+        track_id = getattr(result, "tracking_id", None) if result is not None else None
+        now = time.monotonic()
+        if (self._held_match is not None
+                and (self._held_track != track_id
+                     or now - self._held_at > self.HOLD_SECONDS)):
+            self._release_hold()
+        confirmed = (match is not None and match.status == "matched"
+                     and match.person_type == expected_kind)
+        if confirmed:
+            if self._held_match is not None and self._held_match.person_id != match.person_id:
+                self._release_hold()  # a different person took over the frame
+            if self._held_match is not None:
+                self._held_at = now
+                return self._held_match
+            self._match_streak += 1
+            if self._match_streak >= self.HOLD_CONFIRMATIONS:
+                self._held_match, self._held_track, self._held_at = match, track_id, now
+                return self._held_match
+            return match
+        self._match_streak = 0
+        # A single unmatched frame must not wipe a freshly confirmed identity.
+        if self._held_match is not None and self._held_track == track_id:
+            return self._held_match
+        return match
+
+    def _update_steps(self, *, recognized, proof_ready):
+        step = 2 if proof_ready else (1 if recognized else 0)
+        if hasattr(self, "steps_bar"):
+            self.steps_bar.set_current(step)
 
     def _set_attendance_match(self, match):
         expected_kind = "employee" if self.block == "staff" else "student"
@@ -256,13 +312,18 @@ class AttendanceView(BasePage):
                 self._last_match, track_id=result.tracking_id,
             )
         )
-        for action, button in self._attendance_buttons:
-            enabled = (self.block == "staff" and self._last_match is not None
-                       and self._last_match.person_type == "employee" and actual_face and fresh
+        enabled = bool(self._last_match is not None and actual_face and fresh
                        and (can_use_proof or self._development_t6_mode))
+        for action, button in self._attendance_buttons:
             button.setEnabled(enabled)
             if self.block == "student":
-                button.setToolTip("Điểm danh học viên được ghi tự động sau khi hoàn tất thử thách và kiểm tra đủ điều kiện lớp.")
+                button.setToolTip("Điểm danh tự động sau thử thách; nút này dùng khi cần ghi thủ công.")
+            elif not enabled:
+                button.setToolTip("Cần nhận diện được người đã đăng ký và hoàn tất thử thách chuyển động.")
+            else:
+                button.setToolTip("")
+        self._update_steps(recognized=self._last_match is not None,
+                           proof_ready=can_use_proof or (enabled and self._development_t6_mode))
 
     def _update_liveness_control(self):
         active = self._liveness_challenge.state.status in ("active", "calibrating", "awaiting_turn")
@@ -288,6 +349,7 @@ class AttendanceView(BasePage):
             )
             self.liveness_status_label.setText(self._liveness_challenge.state.prompt)
             self._update_liveness_control()
+            self._release_hold()
             self._set_attendance_match(None)
             self._dev_attempted_tracks.clear()
             return
@@ -300,10 +362,12 @@ class AttendanceView(BasePage):
             )
             self.liveness_status_label.setText(self._liveness_challenge.state.prompt)
             self._update_liveness_control()
+            self._release_hold()
             self._set_attendance_match(None)
             self._dev_attempted_tracks.clear()
             return
-        match = result.match_result
+        match = self._hold_identity(result.match_result, result)
+        held = match is not None and match is self._held_match
         if match is None:
             self.match_result_label.setText("Ch\u01b0a c\u00f3 k\u1ebft qu\u1ea3 so kh\u1edbp")
         elif match.status == "matched":
@@ -316,7 +380,8 @@ class AttendanceView(BasePage):
                 self._set_attendance_match(None)
                 return
             self.match_result_label.setText(
-                f"{match.display_name} \u00b7 {match.person_code} \u00b7 cosine {match.similarity:.3f}"
+                ("\u0110\u00e3 kh\u00f3a \u00b7 " if held else "")
+                + f"{match.display_name} \u00b7 {match.person_code} \u00b7 cosine {match.similarity:.3f}"
             )
         elif match.status == "ambiguous":
             self.match_result_label.setText("K\u1ebft qu\u1ea3 m\u01a1 h\u1ed3 \u00b7 c\u1ea7n ch\u1ecdn l\u1ea1i khu\u00f4n m\u1eb7t")
@@ -335,6 +400,13 @@ class AttendanceView(BasePage):
             self.liveness_button.setEnabled(False)
         else:
             self.liveness_button.setEnabled(True)
+            if (held and result.mediapipe_landmarks is not None
+                    and self._liveness_challenge.state.status in
+                    ("idle", "cancelled", "failed", "expired")):
+                # Identity is locked, so the challenge can start on its own and the
+                # operator only has to follow the prompt.
+                self._liveness_challenge.start(match, track_id=result.tracking_id,
+                                               frame_sequence=result.frame_sequence)
             state = self._liveness_challenge.observe(
                 match=match, face_status=result.status, face_count=result.face_count,
                 track_id=result.tracking_id, landmarks=result.mediapipe_landmarks,
@@ -358,6 +430,7 @@ class AttendanceView(BasePage):
             self._perform_attendance("check_in")
 
     def _on_face_analysis_error(self, message):
+        self._release_hold()
         self._liveness_challenge.invalidate("Lỗi camera/nhận diện; thử thách đã bị hủy.")
         self.liveness_status_label.setText(self._liveness_challenge.state.prompt)
         self._update_liveness_control()
@@ -366,12 +439,14 @@ class AttendanceView(BasePage):
         self._set_attendance_match(None)
 
     def _on_attendance_camera_lost(self):
+        self._release_hold()
         self._liveness_challenge.invalidate("Camera đã dừng; thử thách bị hủy.")
         self.liveness_status_label.setText(self._liveness_challenge.state.prompt)
         self._update_liveness_control()
         self._set_attendance_match(None)
 
     def _on_attendance_camera_error(self, message):
+        self._release_hold()
         self._liveness_challenge.invalidate("Camera gặp lỗi; thử thách bị hủy.")
         self.liveness_status_label.setText(self._liveness_challenge.state.prompt)
         self._update_liveness_control()
@@ -382,9 +457,6 @@ class AttendanceView(BasePage):
         match = self._last_match
         if match is None:
             self.feedback_label.setText("C\u1ea7n nh\u1eadn di\u1ec7n th\u00e0nh c\u00f4ng tr\u01b0\u1edbc.")
-            return
-        if self.block == "student":
-            self.feedback_label.setText("Điểm danh học viên được thực hiện tự động sau thử thách hợp lệ.")
             return
         if self._last_analysis is None or self._last_analysis_at is None or time.monotonic() - self._last_analysis_at > ActiveLivenessChallenge.MAX_OBSERVATION_GAP:
             self.feedback_label.setText("Kết quả camera đã cũ; hãy chờ nhận diện trực tiếp rồi thử lại.")
@@ -485,6 +557,11 @@ class AttendanceView(BasePage):
         self._attendance_page_label.setText(f"Trang {self._attendance_page + 1} / {pages}{suffix}")
         self._attendance_previous.setEnabled(self._attendance_page > 0)
         self._attendance_next.setEnabled(has_next)
+
+    def _clear_attendance_dates(self):
+        """Return both calendars to the empty state so the filter spans everything."""
+        self._attendance_from_date.clear()
+        self._attendance_to_date.clear()
 
     def _attendance_filters(self):
         status_values = ("present", "late", "absent", "excused", "incomplete")

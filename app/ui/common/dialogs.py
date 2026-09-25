@@ -10,7 +10,8 @@ CHI TIẾT : docs/UI_GUIDE.md (tìm theo tên file)
 """
 from datetime import datetime
 
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QTextEdit, QFileDialog
+from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QTextEdit,
+                               QFileDialog, QLineEdit)
 from app.ui import theme as T
 from app.camera.camera_manager import CameraPreviewController
 from app.services.enrollment_service import (
@@ -23,14 +24,14 @@ from app.database.database import connect
 from app.database.repositories.class_repository import ClassRepository
 from app.database.repositories.user_repository import UserRepository
 from app.ui.common.widgets import (Card, label, CameraView, StepsBar, Bar, make_table,
-                                   PrimaryPushButton, PushButton, LineEdit, ComboBox)
+                                   PrimaryPushButton, PushButton, LineEdit, ComboBox, DateEdit)
 
 DATE, PHONE, MAIL = "dd/mm/yyyy", "09xx xxx xxx", "ten@email.com"
-STAFF = [("Mã nhân viên", "text", ""), ("Họ và tên", "text", ""), ("Ngày sinh", "text", DATE),
+STAFF = [("Mã nhân viên", "text", ""), ("Họ và tên", "text", ""), ("Ngày sinh", "date", ""),
          ("Giới tính", "combo", ["Nam", "Nữ", "Khác"]), ("Số điện thoại", "text", PHONE), ("Email", "text", MAIL),
          ("Phòng ban", "combo", []), ("Chức vụ", "text", ""),
-         ("Ngày vào làm", "text", DATE), ("Địa chỉ", "text", "Số nhà, đường, quận…")]
-STUDENT = [("Mã học viên", "text", ""), ("Họ và tên", "text", ""), ("Ngày sinh", "text", DATE),
+         ("Ngày vào làm", "date", ""), ("Địa chỉ", "text", "Số nhà, đường, quận…")]
+STUDENT = [("Mã học viên", "text", ""), ("Họ và tên", "text", ""), ("Ngày sinh", "date", ""),
            ("Giới tính", "combo", ["Nam", "Nữ", "Khác"]), ("Số điện thoại", "text", PHONE), ("Email", "text", MAIL),
            ("Lớp", "combo", []), ("Khóa", "combo", []),
            ("Họ tên phụ huynh", "text", ""), ("SĐT phụ huynh", "text", PHONE)]
@@ -44,6 +45,7 @@ def form(fields, cols=2):
         col = QVBoxLayout(); col.setSpacing(4); col.addWidget(label(name, "muted"))
         if kind == "combo": w = ComboBox(); w.addItems(opt)
         elif kind == "area": w = QTextEdit(); w.setFixedHeight(84); w.setPlaceholderText(opt)
+        elif kind == "date": w = DateEdit(opt)
         else: w = LineEdit(); w.setPlaceholderText(opt)
         col.addWidget(w); g.field_widgets.append(w)
         if kind == "area":
@@ -241,10 +243,12 @@ class EnrollmentDialog(Dialog):
     def _date_value(value, field_name):
         if not value:
             return None
-        try:
-            return datetime.strptime(value, "%d/%m/%Y").date().isoformat()
-        except ValueError as exc:
-            raise EnrollmentValidationError(f"{field_name} phải có định dạng ngày/tháng/năm.") from exc
+        for pattern in ("%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(value, pattern).date().isoformat()
+            except ValueError:
+                continue
+        raise EnrollmentValidationError(f"{field_name} phải là một ngày hợp lệ.")
 
     def _form_data(self):
         gender_text = self._field_text(3)
@@ -326,12 +330,12 @@ def edit_person(block, code, parent, *, on_saved=None):
     person = record["person"]
     profile = record["employee"] if staff else record["student"]
     dialog = Dialog(parent, f"Sửa hồ sơ · {code}", "Các thay đổi chỉ cập nhật thông tin hồ sơ.", 720)
-    fields = [("Họ và tên", "text", ""), ("Ngày sinh (YYYY-MM-DD)", "text", ""),
+    fields = [("Họ và tên", "text", ""), ("Ngày sinh", "date", ""),
               ("Giới tính", "combo", ["unspecified", "male", "female", "other"]),
               ("Điện thoại", "text", ""), ("Email", "text", "")]
     if staff:
         fields += [("Mã nhân viên", "text", ""), ("Phòng ban", "combo", []), ("Chức vụ", "text", ""),
-                   ("Ngày vào làm (YYYY-MM-DD)", "text", ""), ("Địa chỉ", "text", ""),
+                   ("Ngày vào làm", "date", ""), ("Địa chỉ", "text", ""),
                    ("Trạng thái", "combo", ["active", "on_leave", "terminated", "inactive"])]
     else:
         fields += [("Mã học viên", "text", ""), ("Lớp đang học", "combo", []),
@@ -439,10 +443,10 @@ def leave_form(block, parent, *, on_saved=None):
     fields = [("Người nộp", "combo", [display for _id, display in people])]
     if staff:
         fields += [("Loại nghỉ", "combo", ["Nghỉ phép năm", "Nghỉ ốm", "Nghỉ không lương", "Nghỉ thai sản"]),
-                   ("Từ ngày (YYYY-MM-DD)", "text", ""), ("Đến ngày (YYYY-MM-DD)", "text", ""),
+                   ("Từ ngày", "date", ""), ("Đến ngày", "date", ""),
                    ("Người bàn giao", "text", ""), ("Lý do", "area", "")]
     else:
-        fields += [("Lớp", "combo", [f"{row['class_name']} · {row['academic_year']}" for row in classes]), ("Ngày nghỉ (YYYY-MM-DD)", "text", ""),
+        fields += [("Lớp", "combo", [f"{row['class_name']} · {row['academic_year']}" for row in classes]), ("Ngày nghỉ", "date", ""),
                    ("Số buổi nghỉ", "text", "1"), ("Người nộp đơn", "combo", ["guardian", "student"]),
                    ("SĐT liên hệ", "text", ""), ("Lý do", "area", "")]
     grid = form(fields); widgets = grid.field_widgets; dialog.v.addLayout(grid)
@@ -568,11 +572,17 @@ def change_password(parent, username):
               ("Nhập lại mật khẩu mới", "text", "")]
     grid = form(fields, cols=1); widgets = grid.field_widgets; dialog.v.addLayout(grid)
     for widget in widgets:
-        widget.setEchoMode(LineEdit.EchoMode.Password)
+        widget.setEchoMode(QLineEdit.EchoMode.Password)
     error = label(""); error.setWordWrap(True); dialog.v.addWidget(error)
     save = dialog.footer("Đổi mật khẩu", auto_accept=False)
     def persist():
         current, new, again = (widget.text() for widget in widgets)
+        if not current or not new:
+            error.setText("Cần nhập mật khẩu hiện tại và mật khẩu mới.")
+            return
+        if len(new) < 12:
+            error.setText("Mật khẩu mới phải có ít nhất 12 ký tự.")
+            return
         if new != again:
             error.setText("Hai lần nhập mật khẩu mới không khớp.")
             return
@@ -594,7 +604,7 @@ def change_password(parent, username):
 def class_form(parent, edit=None, *, on_saved=None):
     fields = [("Tên lớp", "text", ""), ("Năm học", "text", "VD: 2026-2027"), ("Giáo viên phụ trách", "text", ""),
               ("Phòng học", "text", ""), ("Lịch học", "text", ""), ("Giờ học", "text", ""),
-              ("Sĩ số tối đa", "text", ""), ("Ngày khai giảng (YYYY-MM-DD)", "text", ""), ("Ghi chú", "area", "")]
+              ("Sĩ số tối đa", "text", ""), ("Ngày khai giảng", "date", ""), ("Ghi chú", "area", "")]
     dialog = Dialog(parent, "Sửa lớp" if edit else "Tạo lớp mới", "Thông tin được lưu vào cơ sở dữ liệu.", 720)
     grid = form(fields); widgets = grid.field_widgets; dialog.v.addLayout(grid)
     error = label(""); error.setWordWrap(True); dialog.v.addWidget(error)
@@ -685,7 +695,7 @@ def roster(class_record, parent):
             return
         picker = Dialog(dialog, "Thêm học viên vào lớp", f"Lớp {name}", 520)
         grid = form([("Học viên", "combo", [row["display"] for row in candidates]),
-                     ("Ngày bắt đầu (YYYY-MM-DD)", "text", day)], cols=1)
+                     ("Ngày bắt đầu", "date", day)], cols=1)
         widgets = grid.field_widgets; picker.v.addLayout(grid)
         picker_error = label(""); picker_error.setWordWrap(True); picker.v.addWidget(picker_error)
         save = picker.footer("Thêm vào lớp", auto_accept=False)
@@ -714,7 +724,7 @@ def roster(class_record, parent):
 
 def export(parent):
     f = [("Khoảng thời gian", "combo", ["Hôm nay", "Tuần này", "Tháng này", "Tùy chọn"]), ("Định dạng", "combo", ["Excel (.xlsx)", "CSV", "PDF"]),
-         ("Từ ngày", "text", DATE), ("Đến ngày", "text", DATE)]
+         ("Từ ngày", "date", ""), ("Đến ngày", "date", "")]
     return form_dialog(parent, "Xuất dữ liệu", f, "Xuất file", width=520)
 
 
