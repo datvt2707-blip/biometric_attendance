@@ -6,3 +6,12 @@ logs/*.log
 data/*.db
 .vscode/
 .cursor/
+
+# Official MediaPipe / InsightFace assets: download locally, never commit.
+data/models/
+
+# Local runtime data: enrolled face images and DB backups stay off the remote.
+data/faces/
+data/backups/
+.continue/
+.venv/

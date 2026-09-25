@@ -33,16 +33,27 @@ class MainWindow(FluentWindow):
     def __init__(self, block):
         super().__init__()
         r, office = session.role(), block == "staff"
+        if block not in r["blocks"]:
+            raise PermissionError("Tài khoản không được phép mở khối chức năng này.")
         self.setWindowTitle("Biometric Attendance — " + ("Khối văn phòng" if office else "Khối học viên"))
         self.resize(1360, 860); self.setMinimumSize(1120, 720)
         if hasattr(self, "setCustomBackgroundColor"):
             self.setCustomBackgroundColor(QColor(T.BG), QColor(T.BG))
         nav = self.navigationInterface
-        pages = ([(OfficeDashboard(), FIF.HOME, "Tổng quan"), (EmployeeView(), FIF.PEOPLE, "Nhân viên"),
-                  (OfficeAttendance(), FIF.CAMERA, "Chấm công"), (LeaveView(), FIF.CALENDAR, "Nghỉ phép")] if office else
-                 [(StudentDashboard(), FIF.HOME, "Tổng quan"), (StudentView(), FIF.PEOPLE, "Học viên"),
-                  (ClassView(), FIF.EDUCATION, "Lớp học"), (StudentAttendance(), FIF.CAMERA, "Điểm danh"),
-                  (StudentLeave(), FIF.CALENDAR, "Nghỉ học")])
+        page_specs = ([
+            ("dashboard.staff.read", OfficeDashboard, FIF.HOME, "T\u1ed5ng quan"),
+            ("employee.read", EmployeeView, FIF.PEOPLE, "Nh\u00e2n vi\u00ean"),
+            ("employee.attendance.read", OfficeAttendance, FIF.CAMERA, "Ch\u1ea5m c\u00f4ng"),
+            ("employee.leave.read", LeaveView, FIF.CALENDAR, "Ngh\u1ec9 ph\u00e9p"),
+        ] if office else [
+            ("dashboard.student.read", StudentDashboard, FIF.HOME, "T\u1ed5ng quan"),
+            ("student.read", StudentView, FIF.PEOPLE, "H\u1ecdc vi\u00ean"),
+            ("class.read", ClassView, FIF.EDUCATION, "L\u1edbp h\u1ecdc"),
+            ("student.attendance.read", StudentAttendance, FIF.CAMERA, "\u0110i\u1ec3m danh"),
+            ("student.leave.read", StudentLeave, FIF.CALENDAR, "Ngh\u1ec9 h\u1ecdc"),
+        ])
+        pages = [(page_type(), icon, title) for permission, page_type, icon, title in page_specs
+                 if session.has_permission(permission)]
         if r["accounts"]: pages.append((v.AccountsView(block, "acc"), FIF.TAG, "Tài khoản"))
         if r["settings"]: pages.append((OfficeSettings() if office else StudentSettings(), FIF.SETTING, "Cài đặt"))
         for page, icon, text in pages: self.addSubInterface(page, icon, text)

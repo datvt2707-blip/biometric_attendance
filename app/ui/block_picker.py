@@ -25,8 +25,11 @@ class BlockPicker(QWidget):
         v.addWidget(t); v.addWidget(s); v.addSpacing(18)
         row = QHBoxLayout(); row.setSpacing(18); row.setAlignment(Qt.AlignCenter)
         from PySide6.QtWidgets import QPushButton
+        available = session.role()["blocks"]
         for key, txt in (("staff", "Khối văn phòng\n\nChấm công · Nhân viên · Nghỉ phép"),
                          ("student", "Khối học viên\n\nĐiểm danh · Học viên · Lớp học")):
+            if key not in available:
+                continue
             b = QPushButton(txt); b.setObjectName("blockcard"); b.setFixedSize(340, 170); b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _=False, k=key: self.chosen.emit(k)); row.addWidget(b)
         v.addLayout(row); v.addSpacing(18)

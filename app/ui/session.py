@@ -1,18 +1,48 @@
-"""
-session.py — PHIÊN ĐĂNG NHẬP + PHÂN QUYỀN (mới ở mức giao diện)
-LÀM GÌ   : Lưu vai trò đang đăng nhập và bảng ROLES (khối nào được vào, có Cài đặt/Tài khoản không).
-CÔNG NGHỆ: Python thuần, không dùng Qt.
-NGHIỆP VỤ: Phân quyền Admin / Nhân viên HR / Nhân viên học vụ.
-NỐI SAU  : authentication_service + account_repository sẽ ghi vai trò thật vào đây.
-CHI TIẾT : docs/UI_GUIDE.md (tìm theo tên file)
-"""
-ROLES = {
-    "admin":  dict(name="Admin", title="Quản trị viên", blocks=["staff", "student"], settings=True, accounts=True),
-    "hr":     dict(name="Nhân viên HR", title="Khối văn phòng", blocks=["staff"], settings=False, accounts=False),
-    "hocvu":  dict(name="Nhân viên học vụ", title="Khối học viên", blocks=["student"], settings=False, accounts=False),
-}
-current = {"role": "admin"}
+"""In-memory session containing only claims returned by AuthenticationService."""
+from app.services.authentication_service import AuthenticatedIdentity
+from app.services.authorization_service import AuthorizationService, role_context
+
+
+current = {"identity": None}
+
+
+def establish(identity):
+    if not isinstance(identity, AuthenticatedIdentity):
+        raise PermissionError("Phiên chỉ nhận danh tính do dịch vụ xác thực phát hành.")
+    if identity.account_id <= 0 or not identity.roles or not identity.permissions:
+        raise PermissionError("Tài khoản chưa có quyền truy cập đã cấu hình.")
+    current["identity"] = identity
+    AuthorizationService.set_identity(identity)
+
+
+def logout():
+    current["identity"] = None
+    AuthorizationService.clear()
+
+
+def identity():
+    value = current["identity"]
+    if value is None:
+        raise PermissionError("Cần đăng nhập để tiếp tục.")
+    return value
+
+
+def has_permission(permission_code):
+    if not isinstance(permission_code, str) or not permission_code.strip():
+        return False
+    try:
+        value = identity()
+    except PermissionError:
+        return False
+    return any(item.get("permission_code") == permission_code for item in value.permissions)
+
+
+def require_permission(permission_code):
+    value = identity()
+    if not has_permission(permission_code):
+        raise PermissionError(f"Tài khoản không có quyền: {permission_code}.")
+    return value
 
 
 def role():
-    return ROLES[current["role"]]
+    return role_context(identity())

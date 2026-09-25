@@ -15,13 +15,12 @@ from app.ui import theme as T
 from app.ui.common.widgets import Card, label, ComboBox, CheckBox
 from app.ui.common.anim import GlowLine, FadeButton, fade_in, slide_in, shake, mix
 
-KEYS = ["admin", "hr", "hocvu"]
-FEATS = ("Nhận diện khuôn mặt ArcFace", "Chống giả mạo MiniFASNet", "Quản lý nhân sự & học viên", "Thông báo Telegram")
+FEATS = ("Nh\u1eadn di\u1ec7n khu\u00f4n m\u1eb7t", "Qu\u1ea3n l\u00fd h\u1ed3 s\u01a1 nh\u00e2n s\u1ef1 & h\u1ecdc vi\u00ean")
 SIDE_W = 430
 
 
 class LoginView(QWidget):
-    logged_in = Signal(str)
+    logged_in = Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -38,9 +37,11 @@ class LoginView(QWidget):
         s.addStretch(); s.addWidget(label("v1.0.0 · Desktop Application", "muted"))
         right = QVBoxLayout(); right.setAlignment(Qt.AlignCenter)
         self.card = Card(); self.card.setFixedWidth(400); self.card.box.setSpacing(14); self.card.box.setContentsMargins(30, 30, 30, 30)
-        self.card.box.addWidget(label("Đăng nhập", "h1")); self.card.box.addWidget(label("Chọn vai trò và đăng nhập để tiếp tục", "muted"))
+        self.card.box.addWidget(label("\u0110\u0103ng nh\u1eadp", "h1")); self.card.box.addWidget(label("Quy\u1ec1n truy c\u1eadp \u0111\u01b0\u1ee3c x\u00e1c \u0111\u1ecbnh t\u1eeb t\u00e0i kho\u1ea3n \u0111\u00e3 x\u00e1c th\u1ef1c", "muted"))
         self.u = GlowLine("Tên đăng nhập"); self.p = GlowLine("Mật khẩu", True)
-        self.role = ComboBox(); self.role.addItems(["Quản trị viên (Admin)", "Nhân viên HR – Khối văn phòng", "Nhân viên học vụ – Khối học viên"])
+        self.role = ComboBox(); self.role.addItems(["Vai tr\u00f2 \u0111\u01b0\u1ee3c x\u00e1c \u0111\u1ecbnh sau khi x\u00e1c th\u1ef1c"])
+        self.role.setEnabled(False)
+        self.role.setToolTip("Vai tr\u00f2 ph\u1ea3i đ\u01b0\u1ee3c x\u00e1c đ\u1ecbnh t\u1eeb t\u00e0i kho\u1ea3n sau khi x\u00e1c th\u1ef1c.")
         for w in (self.u, self.p, self.role): self.card.box.addWidget(w)
         self.card.box.addWidget(CheckBox("Ghi nhớ đăng nhập"))
         self.err = label("", None, T.ROSE); self.err.setWordWrap(True); self.card.box.addWidget(self.err)
@@ -79,4 +80,26 @@ class LoginView(QWidget):
     def _submit(self):
         if not self.u.text().strip() or not self.p.text():
             self.err.setText("Vui lòng nhập tên đăng nhập và mật khẩu."); shake(self.card); return   # rung khi sai
-        self.err.setText(""); self.logged_in.emit(KEYS[self.role.currentIndex()])
+        from app.services.authentication_service import (
+            AuthenticationError, AuthenticationService, AuthorizationConfigurationError,
+        )
+        password = self.p.text()
+        try:
+            identity = AuthenticationService().login(self.u.text(), password)
+        except AuthorizationConfigurationError as exc:
+            self.p.clear()
+            self.err.setText(str(exc))
+            return
+        except AuthenticationError:
+            self.p.clear()
+            self.err.setText("Tên đăng nhập hoặc mật khẩu không chính xác.")
+            shake(self.card)
+            return
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Authentication database operation failed")
+            self.p.clear()
+            self.err.setText("Không thể xác thực do lỗi cơ sở dữ liệu. Hãy thử lại sau.")
+            return
+        self.p.clear()
+        self.logged_in.emit(identity)
